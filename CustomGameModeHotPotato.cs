@@ -167,7 +167,7 @@ namespace GameModeInverted
                     try 
                     {
                         // Now it's safe to call PlayerDied
-                        ServerSend.PlayerDied(taggedPlayerId, 1, Vector3.zero);
+                        GameServer.PlayerDied(taggedPlayerId, 1, Vector3.zero);
                     }
                     catch (Exception ex)
                     {
@@ -257,7 +257,7 @@ namespace GameModeInverted
 
                 return false; // Prevent dropping the stick
         }
-        
+
         [HarmonyPatch(typeof(GameModeTag), nameof(GameModeTag.TagPlayer))]
         [HarmonyPostfix]
         public static void GameModeSetTag(ulong param_1, ulong param_2)
