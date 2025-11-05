@@ -18,7 +18,7 @@ namespace GameModeInverted
         #region Fields and Properties
 
         internal static CustomGameModeHotPotato Instance;
-        //internal static GameModeTag Tag;
+        internal static GameModeTag Tag;
 
         internal Harmony patches;
 
@@ -30,6 +30,10 @@ namespace GameModeInverted
         internal static ulong taggedPlayerId = 0;
         internal static float bombTagTime = 25f;
         internal static int amountToKill = 4;
+
+        // Effect variables
+        internal static float EffectCounter = 0f;
+        internal static float EffectTimer = 0.5f; // How often the effect should apply
 
         public CustomGameModeHotPotato() : base
         (
@@ -114,9 +118,9 @@ namespace GameModeInverted
             if (!SteamManager.Instance.IsLobbyOwner())
                 return false;
 
-            isGameStarted = true;
+            Tag = __instance; // Store the reference to the GameModeTag instance
 
-            //__instance.field_Private_Int32_0 = 999; // so the game doesnt end early BOMBTAG VALUE
+            isGameStarted = true;
 
             // Get all alive players
             List<ulong> alivePlayers = GetAlivePlayers();
@@ -130,9 +134,6 @@ namespace GameModeInverted
             TagRandomPlayer(); // Tag a random player
 
             amountToKill = Mathf.RoundToInt(startingPlayerCount * 0.5f);
-
-            // Debug message to verify amountToKill value
-            ServerSend.SendChatMessage(1, "Amount to kill set to: " + amountToKill);
 
             ServerSend.SendChatMessage(1, "Game started! " + amountToKill + " need to die!");
 
@@ -158,7 +159,6 @@ namespace GameModeInverted
             bombTagTime -= Time.deltaTime;
             if (bombTagTime <= 0)
             {
-                // Add extra protection against null references
                 if (taggedPlayerId != 0 && GameManager.Instance != null && 
                     GameManager.Instance.activePlayers != null && 
                     GameManager.Instance.activePlayers.ContainsKey(taggedPlayerId) && 
@@ -166,8 +166,20 @@ namespace GameModeInverted
                 {
                     try 
                     {
-                        // Now it's safe to call PlayerDied
-                        GameServer.PlayerDied(taggedPlayerId, 1, Vector3.zero);
+
+                        // check if amount to kill is already reached
+                        if (amountToKill <= 0)
+                        {
+                            ServerSend.SendChatMessage(1, $"Target number of kills reached! {GameManager.Instance.activePlayers[taggedPlayerId].username} was lucky");
+                            // untag the player
+                            UntagPlayer(taggedPlayerId);
+                            isGameStarted = false;
+                        }
+                        else
+                        {
+                            // Now it's safe to call PlayerDied
+                            GameServer.PlayerDied(taggedPlayerId, 1, Vector3.zero);
+                        }
                     }
                     catch (Exception ex)
                     {
@@ -182,6 +194,21 @@ namespace GameModeInverted
                     TagRandomPlayer(); // If the tagged player doesn't exist, tag a random player
                 }
             }
+
+            // Calculate effect speedup: as bombTagTime approaches 0, the effect interval decreases
+            float minEffectInterval = 0.05f; // Minimum interval between effects
+            float maxEffectInterval = 0.5f; // Maximum interval (default)
+            float normalizedTime = Mathf.Clamp01(bombTagTime / 25f); // 1 at start, 0 at end
+            EffectTimer = Mathf.Lerp(minEffectInterval, maxEffectInterval, normalizedTime);
+
+            EffectCounter -= Time.deltaTime;
+            if (EffectCounter <= 0f)
+            {
+                EffectCounter = EffectTimer;
+                // Infected Effect
+                ServerSend.PlayerDamage(taggedPlayerId, taggedPlayerId, 0, Vector3.zero, 5);
+            }
+
         }
 
         [HarmonyPatch(typeof(ServerSend), nameof(ServerSend.PlayerDied))]
@@ -190,6 +217,9 @@ namespace GameModeInverted
         {
             if (!SteamManager.Instance.IsLobbyOwner())
                 return;
+            if (!isGameStarted)
+                return; // If the game hasn't started, do nothing
+
             amountToKill--; // Decrease the amount to kill when a player dies
             
             // Add a debug message to verify player death
@@ -199,6 +229,13 @@ namespace GameModeInverted
             if (amountToKill <= 0)
             {
                 ServerSend.SendChatMessage(1, "Target number of kills reached! Game over!");
+                // if death is not the tagged player, untag the player
+                if(param_0 != taggedPlayerId)
+                {
+                    UntagPlayer(taggedPlayerId);
+                }
+
+                MonoBehaviourExtensions.StartCoroutine(LobbyManager.Instance, Instance.EndRoundAfterDelay(param_0, 1f)); // End the round after 1 second delay
                 isGameStarted = false;
                 return;
             }
@@ -206,23 +243,10 @@ namespace GameModeInverted
             // Check if the player who died is the tagged player
             if (param_0 == taggedPlayerId)
             {
-                // pick a random player to be tagged
-                //List<ulong> alivePlayers = GetAlivePlayers();
-                //if (alivePlayers.Count == 0)
-                //{
-                //    ServerSend.SendChatMessage(1, "No players left to tag!");
-                //    isGameStarted = false;
-                //    return;
-                //}
-                //ulong randomPlayerId = alivePlayers[UnityEngine.Random.Range(0, alivePlayers.Count)];
-                //taggedPlayerId = randomPlayerId;
-                //ServerSend.TagPlayer(0, randomPlayerId); // Set the new tagged player
+                bombTagTime = 25f; // Reset the bomb tag timer
                 TagRandomPlayer(); // Re-tag a player if the tagged player dies
                 ServerSend.SendChatMessage(1, "Tagged player died! New player tagged.");
             }
-            
-            // Always reset the bomb timer when any player dies
-            bombTagTime = 25f;
         }
 
         [HarmonyPatch(typeof(LobbyManager), nameof(LobbyManager.OnPlayerJoinLeaveUpdate))]
@@ -234,14 +258,6 @@ namespace GameModeInverted
 
             if(param_1.m_SteamID == taggedPlayerId)
             {
-                //pick a random player to be tagged
-                //List<ulong> alivePlayers = GetAlivePlayers();
-                //if (alivePlayers.Count == 0)
-                //    return;
-                //ulong randomPlayerId = alivePlayers[UnityEngine.Random.Range(0, alivePlayers.Count)];
-                //taggedPlayerId = randomPlayerId;
-                //ServerSend.TagPlayer(0, taggedPlayerId);
-
                 TagRandomPlayer(); // Re-tag a player if the tagged player leaves
             }
         }
@@ -372,6 +388,22 @@ namespace GameModeInverted
             GameServer.ForceGiveWeapon(taggedPlayerId, 9, SharedObjectManager.Instance.GetNextId()); // Give the snowball to the player who was tagged
         }
 
+        private static void UntagPlayer(ulong playerId)
+        {
+            if (taggedPlayerId != 0)
+            {
+                ServerSend.TagPlayer(playerId, 0); // Untag the player
+                taggedPlayerId = 0;
+            }
+        }
+
         #endregion
+
+        // make a couroutine to handle player delayed ending of the round
+        private IEnumerator EndRoundAfterDelay(ulong playerId, float delay)
+        {
+            yield return new WaitForSeconds(delay);
+            Tag.EndRound(); // End the round for the player
+        }
     }
 }
